@@ -41,7 +41,7 @@ You should get something like this:
     root       root       1085   sshd                     /usr/sbin/sshd -D
     PROCESS_MEMORY_USAGE OK - RSS 4.3M - SIZE: 111M | 'resident set size'=4308KB;; 'virtual memory size'=112812KB;;
 
-The UID root and CONDLINE part /usr/sbin/sshd should be coloured red on an ANSI terminal to show how the filters matched the process list (when using --verbose).
+The UID root and CMNDLINE part /usr/sbin/sshd should be coloured red on an ANSI terminal to show how the filters matched the process list (when using --verbose).
 
 ## Usage
 
