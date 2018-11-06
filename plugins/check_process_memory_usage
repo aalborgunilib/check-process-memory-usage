@@ -1,0 +1,265 @@
+#!/usr/bin/perl -w
+
+# Nagios (and compatible) plugin to check the memory usage of one or more unix process
+#
+# (c) 2018 Kasper Løvschall and Aalborg University Library
+#
+# This software is free software; you can redistribute it and/or modify
+# it under the same terms as Perl itself.
+
+use strict;
+use warnings;
+
+use File::Basename qw(basename);
+use Monitoring::Plugin;
+use Proc::ProcessTable;
+use Number::Bytes::Human qw(format_bytes);
+use Scalar::Util qw(looks_like_number);
+use Term::ANSIColor qw(color);
+
+use vars qw($VERSION $PROGNAME $verbose $warn $critical $timeout $result);
+
+$PROGNAME = basename($0);
+$VERSION = "1.0.0";
+
+# Instantiate plugin object
+my $p = Monitoring::Plugin->new(
+	usage => "Usage: %s
+	[ -c|--critical=<critical threshold in kB> ]
+	[ -w|--warning=<warning threshold in kB> ]
+	[ -n|--no_filter_match ]
+	[ -f|--fname=<file name filter> ]
+	[ -C|--cmndline=<command line filter> ]
+	[ -u|--uid=<uid or user name filter> ]
+	[ -g|--gid=<gid or group name filter> ]
+	[ -p|--pid=<pid> ]
+	[ -P|--pidfile=<pidfile to get pid> ]
+	[ -t|--timeout=<timeout> ]
+	[ -v|--verbose ]",
+	plugin => $PROGNAME,
+	version => $VERSION,
+	timeout => 15,
+	blurb => 'Nagios (and compatibles) plugin to check the memory usage (resident set size) of one or more unix processes',
+);
+
+# Define command line options
+$p->add_arg(
+	spec => 'critical|c=i',
+	help =>
+	qq{-c, --critical=INTEGER
+   Critical threshold in kB for RSS memory usage for plugin output.},
+	required => 0,
+);
+
+$p->add_arg(
+	spec => 'warning|w=i',
+	help =>
+	qq{-w, --warning=INTEGER
+   Warning threshold in kB for RSS memory usage for plugin output.},
+	required => 0,
+);
+
+$p->add_arg(
+	spec => 'no_filter_match|n+',
+	help =>
+	qq{-n, --no_filter_match
+   The plugin will return OK even if nothing was matched by the filters.},
+	required => 0,
+);
+
+$p->add_arg(
+	spec => 'pid|p=i',
+	help =>
+	qq{-p, --pid=INTEGER
+   Select process by pid number.},
+	required => 0,
+);
+
+$p->add_arg(
+	spec => 'pidfile|P=s',
+	help =>
+	qq{-P, --pidfile=STRING
+   Select process by pid number read from pidfile.},
+	required => 0,
+);
+
+$p->add_arg(
+	spec => 'fname|f=s',
+	help =>
+	qq{-f, --fname=STRING
+   Filter processes by file name.},
+	required => 0,
+);
+
+$p->add_arg(
+	spec => 'cmndline|C=s',
+	help =>
+	qq{-C, --cmndline=STRING
+   Filter processes by command line.},
+	required => 0,
+);
+
+$p->add_arg(
+	spec => 'uid|u=s',
+	help =>
+	qq{-u, --uid=INTEGER|STRING
+   Filter processes by uid (or user name)},
+	required => 0,
+);
+
+$p->add_arg(
+	spec => 'gid|g=s',
+	help =>
+	qq{-g, --gid=INTEGER|STRING
+   Filter processes by gid (or user group)},
+	required => 0,
+);
+
+# Parse arguments
+$p->getopts;
+
+# Sanity checks
+if ( defined $p->opts->warning && defined $p->opts->critical && ( $p->opts->warning > $p->opts->critical ) ) {
+	$p->plugin_die("The warning threshold is set higher than the critical");
+}
+
+# Enable and start counting down until timeout (this is the "mission critical" part)
+alarm $p->opts->timeout;
+
+# Set pid from command line option or get it from pidfile
+my $pid = $p->opts->pid;
+if ( defined $p->opts->pidfile ) {
+	# Die if pidfile does not exist
+	if ( ! -f $p->opts->pidfile ) {
+		$p->plugin_die("The pidfile: \"" . $p->opts->pidfile . "\" does not exist...");
+	}
+
+	# Open and read first line of the pidfile
+	open ( my $pidfile, '<', $p->opts->pidfile ) || $p->plugin_die("The pidfile: \"" . $p->opts->pidfile . "\" does not open...");
+	my $read_pid = <$pidfile>;
+	close $pidfile;
+
+	# Set the pid from the pidfile
+	$pid=$read_pid if (looks_like_number($read_pid));
+}
+
+# Get current process table
+my $proc = Proc::ProcessTable->new( 'cache_ttys' => 1 );
+my $proc_table = $proc->table;
+
+# Counter for memory usage
+my $resident_set_size = 0;
+my $virtual_memory_size = 0;
+
+my $no_process_match = 0;
+
+my $FORMAT = "%-10s %-10s %-6s %-24s %s\n";
+printf($FORMAT, "UID", "GID", "PID", "FNAME", "CMNDLINE") if $p->opts->verbose;
+foreach my $list ( @{$proc_table} ){
+	my $fname = $list->fname;
+	my $cmndline = $list->cmndline;
+
+	# Select process by pid
+	if ( defined $pid ) {
+		# Skip pids not matching
+		next unless $list->pid == $pid;
+	}
+
+	# Filter the process list by uid or user name
+	if ( defined $p->opts->uid ) {
+		if ( looks_like_number($p->opts->uid) ) {
+			# Skip uid not matching the filter
+			next unless $list->uid == $p->opts->uid;
+		}
+		else {
+			# Skip user name not matching the filter
+			next unless $list->uid eq getpwnam($p->opts->uid);
+		}
+	}
+
+	# Filter the process list by gid or group name
+	if ( defined $p->opts->gid ) {
+		if ( looks_like_number($p->opts->gid) ) {
+			# Skip gid not matching the filter
+			next unless $list->gid == $p->opts->gid;
+		}
+		else {
+			# Skip group name not matching the filter
+			next unless $list->gid eq getgrnam($p->opts->gid);
+		}
+	}
+
+	# Filter the process list by file name?
+	if ( defined $p->opts->fname ) {
+		# Skip process names not matching the filter
+		next unless $list->fname eq $p->opts->fname;
+
+		# Add ANSI colors to verbose output
+		if ( $p->opts->verbose ) {
+			$fname = color('bold red on_white') . $fname . color('reset');
+		}
+	}
+
+	# Filter the process list by command line?
+	if ( defined $p->opts->cmndline ) {
+		# If so... Skip our own process pid (stored in $$)
+		next if $list->pid == $$;
+
+		# Skip process names not matching the filter
+		next unless ( index($list->cmndline, $p->opts->cmndline) > -1 );
+
+		# Add ANSI colors to verbose output
+		if ( $p->opts->verbose ) {
+			my $filter_match = $p->opts->cmndline;
+			my $replace_filter_match = color('bold red on_white') . $filter_match . color('reset');
+			$cmndline =~ s/$filter_match/$replace_filter_match/;
+		}
+	}
+
+	# Add memory usage to counter
+	$resident_set_size = $resident_set_size + $list->rss if $list->rss;
+	$virtual_memory_size = $virtual_memory_size + $list->size if $list->size;
+
+	# Print debugging information with ANSI color high lighted filter matches
+	if ( $p->opts->verbose ) {
+		printf($FORMAT,
+			$p->opts->uid ? color('bold red on_white') . scalar(getpwuid($list->uid)) . color('reset') : scalar(getpwuid($list->uid)),
+			$p->opts->gid ? color('bold red on_white') . scalar(getgrgid($list->gid)) . color('reset') : scalar(getgrgid($list->gid)),
+			$pid ? color('bold red on_white') . $list->pid . color('reset') : $list->pid,
+			$list->cmndline ? $fname : '[' . $fname . ']',
+			$cmndline);
+	}
+
+	$no_process_match = 1;
+}
+
+# Disable timeout
+alarm 0;
+
+# Add performance data to output
+$p->add_perfdata(
+	label => "resident set size",
+	value => ($resident_set_size/1024),
+	uom => "KB"
+);
+
+$p->add_perfdata(
+	label => "virtual memory size",
+	value => ($virtual_memory_size/1024),
+	uom => "KB"
+);
+
+# Return UNKNOWN if nothing matched (unless --no_filter_match is set)
+if ( ! $no_process_match && ! $p->opts->no_filter_match ) {
+	$p->plugin_exit(
+		return_code => UNKNOWN,
+		message => "No process is matching the filter - empty output",
+	);
+}
+
+# Test threshold and set return code and message
+$p->plugin_exit(
+	return_code => $p->check_threshold($resident_set_size/1024),
+	message => "RSS " . format_bytes($resident_set_size) . " - SIZE: " . format_bytes($virtual_memory_size),
+);
+
