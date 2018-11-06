@@ -2,7 +2,7 @@
 A plugin for Nagios (and other compatible monitoring services) to check and monitor the main memory usage of one or more unix process. A single process can be located by pid or a pidfile or a single or multiple processes by filtering the process list using pid, gid, file name, and command line.
 
 ## About
-I had an actual use case where i needed to monitor the main memory usage [(resident set size)](https://en.wikipedia.org/wiki/Resident_set_size) of a group of httpd-processes running under different users and locations.
+I had an actual use case where I needed to monitor the main memory usage [(resident set size)](https://en.wikipedia.org/wiki/Resident_set_size) of a group of httpd-processes running under different users and locations.
 
 Looking around for a solution it seemed that this requirement was more or less abundant. So, I have written this plugin to solve my needs and maybe somebody else's needs.
 
